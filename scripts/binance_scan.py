@@ -87,7 +87,7 @@ async def analyse_symbol(
 
     average_volume = calculate_average_volume(klines[:-1], avg_window)
     last_candle = klines[-1]
-    last_volume = float(last_candle[5])
+    last_volume = float(last_candle[7])
     average_volume_60 = calculate_average_volume(klines[:-1], 60)
 
     if not is_green_volume_spike(
@@ -96,6 +96,9 @@ async def analyse_symbol(
         volume_multiplier,
         max_body_ratio=max_body_ratio,
     ):
+        return None
+
+    if last_volume < 20_000:
         return None
 
     open_time_ms = int(last_candle[0])
@@ -271,8 +274,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for detection in new_detections:
                     print(
                         f"{detection.symbol} - {detection.candle_open_time:%Y-%m-%d %H:%M:%S} UTC"
-                        f" | volume: {detection.last_candle_volume:.2f}"
-                        f" | avg60: {detection.average_volume_60:.2f}",
+                        f" | volume_usdt: {detection.last_candle_volume:.2f}"
+                        f" | avg60_usdt: {detection.average_volume_60:.2f}",
                         flush=True,
                     )
 

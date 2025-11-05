@@ -19,7 +19,7 @@ def _parse_candle(kline: list[str] | tuple[str, ...]) -> CandleCharacteristics:
     high_price = float(kline[2])
     low_price = float(kline[3])
     close_price = float(kline[4])
-    volume = float(kline[5])
+    volume = float(kline[7])
 
     price_reference = open_price if open_price != 0 else 1.0
     body_ratio = abs(close_price - open_price) / price_reference
