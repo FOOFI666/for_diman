@@ -92,12 +92,15 @@ async def analyse_symbol(
         return None
 
     open_time_ms = int(last_candle[0])
-    open_time = dt.datetime.utcfromtimestamp(open_time_ms / 1000)
+    open_time = dt.datetime.fromtimestamp(
+        open_time_ms / 1000,
+        tz=dt.timezone.utc,
+    )
 
     return Detection(
         symbol=symbol,
         candle_open_time=open_time,
-        detected_at=dt.datetime.utcnow(),
+        detected_at=dt.datetime.now(dt.timezone.utc),
     )
 
 
@@ -220,7 +223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Unable to load trading symbols: {error}", file=sys.stderr)
                 return None
 
-            return await detect_symbols(
+            detections = await detect_symbols(
                 session,
                 symbols,
                 interval=args.interval,
@@ -229,6 +232,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_body_ratio=max_body_ratio,
                 max_concurrency=args.max_concurrency,
             )
+
+            print(
+                f"Scanned {len(symbols)} symbols; found {len(detections)} matches.",
+                flush=True,
+            )
+
+            return detections
 
     detections = asyncio.run(_run())
 
