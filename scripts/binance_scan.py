@@ -26,6 +26,8 @@ class Detection:
     symbol: str
     candle_open_time: dt.datetime
     detected_at: dt.datetime
+    last_candle_volume: float
+    average_volume_60: float
 
 
 async def fetch_trading_symbols(session: aiohttp.ClientSession) -> list[str]:
@@ -74,7 +76,8 @@ async def analyse_symbol(
     """Analyse a trading pair and return a detection when it matches."""
 
     try:
-        klines = await fetch_klines(session, symbol, interval, avg_window + 1)
+        history_length = max(avg_window, 60)
+        klines = await fetch_klines(session, symbol, interval, history_length + 1)
     except aiohttp.ClientError as error:
         print(f"Failed to fetch klines for {symbol}: {error}", file=sys.stderr)
         return None
@@ -84,6 +87,8 @@ async def analyse_symbol(
 
     average_volume = calculate_average_volume(klines[:-1], avg_window)
     last_candle = klines[-1]
+    last_volume = float(last_candle[5])
+    average_volume_60 = calculate_average_volume(klines[:-1], 60)
 
     if not is_green_volume_spike(
         last_candle,
@@ -103,6 +108,8 @@ async def analyse_symbol(
         symbol=symbol,
         candle_open_time=open_time,
         detected_at=dt.datetime.now(dt.timezone.utc),
+        last_candle_volume=last_volume,
+        average_volume_60=average_volume_60,
     )
 
 
@@ -263,7 +270,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                 for detection in new_detections:
                     print(
-                        f"{detection.symbol} - {detection.candle_open_time:%Y-%m-%d %H:%M:%S} UTC",
+                        f"{detection.symbol} - {detection.candle_open_time:%Y-%m-%d %H:%M:%S} UTC"
+                        f" | volume: {detection.last_candle_volume:.2f}"
+                        f" | avg60: {detection.average_volume_60:.2f}",
                         flush=True,
                     )
 
