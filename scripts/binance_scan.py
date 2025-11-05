@@ -1,4 +1,4 @@
-"""Scan Binance symbols for potential low-amplitude volume spikes."""
+"""Scan Binance futures symbols for potential low-amplitude volume spikes."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import aiohttp
 from binance_utils import calculate_average_volume, is_green_volume_spike
 
 
-BINANCE_API_URL = "https://api.binance.com"  # Spot market endpoint.
+BINANCE_FUTURES_API_URL = "https://fapi.binance.com"  # USDⓈ-M Futures endpoint.
 
 
 @dataclass(slots=True)
@@ -29,9 +29,9 @@ class Detection:
 
 
 async def fetch_trading_symbols(session: aiohttp.ClientSession) -> list[str]:
-    """Return all trading symbols that are currently active on Binance."""
+    """Return all USDⓈ-M perpetual symbols that are currently active on Binance."""
 
-    async with session.get(f"{BINANCE_API_URL}/api/v3/exchangeInfo") as response:
+    async with session.get(f"{BINANCE_FUTURES_API_URL}/fapi/v1/exchangeInfo") as response:
         response.raise_for_status()
         payload = await response.json()
 
@@ -39,6 +39,8 @@ async def fetch_trading_symbols(session: aiohttp.ClientSession) -> list[str]:
         symbol_info["symbol"]
         for symbol_info in payload.get("symbols", [])
         if symbol_info.get("status") == "TRADING"
+        and symbol_info.get("quoteAsset") == "USDT"
+        and symbol_info.get("contractType") == "PERPETUAL"
     ]
 
     return sorted(symbols)
@@ -53,7 +55,7 @@ async def fetch_klines(
     """Return the recent klines for a trading pair."""
 
     async with session.get(
-        f"{BINANCE_API_URL}/api/v3/klines",
+        f"{BINANCE_FUTURES_API_URL}/fapi/v1/klines",
         params={"symbol": symbol, "interval": interval, "limit": limit},
     ) as response:
         response.raise_for_status()
@@ -199,6 +201,15 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
         help="Maximum amount of parallel requests to Binance (default: 10)",
     )
     parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=60.0,
+        help=(
+            "Seconds to wait between scans. Use 0 or a negative value to perform a"
+            " single scan and exit (default: 60)."
+        ),
+    )
+    parser.add_argument(
         "--log-file",
         type=Path,
         help="Optional path to append detections in CSV format",
@@ -211,8 +222,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_arguments(argv or sys.argv[1:])
 
     max_body_ratio = args.max_body_ratio if args.max_body_ratio > 0 else None
+    poll_interval = args.poll_interval if args.poll_interval > 0 else 0.0
 
-    async def _run() -> list[Detection] | None:
+    async def _run() -> int:
         timeout = aiohttp.ClientTimeout(total=10)
         connector = aiohttp.TCPConnector(limit_per_host=args.max_concurrency)
 
@@ -221,43 +233,59 @@ def main(argv: Sequence[str] | None = None) -> int:
                 symbols = await fetch_trading_symbols(session)
             except aiohttp.ClientError as error:
                 print(f"Unable to load trading symbols: {error}", file=sys.stderr)
-                return None
+                return 1
 
-            detections = await detect_symbols(
-                session,
-                symbols,
-                interval=args.interval,
-                avg_window=args.avg_window,
-                volume_multiplier=args.volume_multiplier,
-                max_body_ratio=max_body_ratio,
-                max_concurrency=args.max_concurrency,
-            )
+            last_reported: dict[str, dt.datetime] = {}
 
-            print(
-                f"Scanned {len(symbols)} symbols; found {len(detections)} matches.",
-                flush=True,
-            )
+            while True:
+                detections = await detect_symbols(
+                    session,
+                    symbols,
+                    interval=args.interval,
+                    avg_window=args.avg_window,
+                    volume_multiplier=args.volume_multiplier,
+                    max_body_ratio=max_body_ratio,
+                    max_concurrency=args.max_concurrency,
+                )
 
-            return detections
+                new_detections: list[Detection] = []
+                for detection in detections:
+                    last_seen = last_reported.get(detection.symbol)
+                    if last_seen is None or detection.candle_open_time > last_seen:
+                        last_reported[detection.symbol] = detection.candle_open_time
+                        new_detections.append(detection)
 
-    detections = asyncio.run(_run())
+                print(
+                    f"[{dt.datetime.now(dt.timezone.utc):%Y-%m-%d %H:%M:%S} UTC]"
+                    f" Scanned {len(symbols)} symbols; found {len(new_detections)} new matches.",
+                    flush=True,
+                )
 
-    if detections is None:
-        return 1
+                for detection in new_detections:
+                    print(
+                        f"{detection.symbol} - {detection.candle_open_time:%Y-%m-%d %H:%M:%S} UTC",
+                        flush=True,
+                    )
 
-    for detection in detections:
-        print(
-            f"{detection.symbol} - {detection.candle_open_time:%Y-%m-%d %H:%M:%S} UTC",
-            flush=True,
-        )
+                if args.log_file:
+                    persist_detections(args.log_file, new_detections)
 
-    if args.log_file:
-        persist_detections(args.log_file, detections)
+                if not new_detections:
+                    print("No new symbols matched the configured filters.")
 
-    if not detections:
-        print("No symbols matched the configured filters.")
+                if poll_interval == 0:
+                    return 0
 
-    return 0
+                try:
+                    await asyncio.sleep(poll_interval)
+                except asyncio.CancelledError:
+                    raise
+
+    try:
+        return asyncio.run(_run())
+    except KeyboardInterrupt:
+        print("Stopping monitoring.")
+        return 0
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
