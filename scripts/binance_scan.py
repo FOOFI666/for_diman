@@ -78,7 +78,7 @@ async def analyse_symbol(
     try:
         history_length = max(avg_window, 60)
         klines = await fetch_klines(session, symbol, interval, history_length + 1)
-    except aiohttp.ClientError as error:
+    except (aiohttp.ClientError, asyncio.TimeoutError) as error:
         print(f"Failed to fetch klines for {symbol}: {error}", file=sys.stderr)
         return None
 
@@ -232,13 +232,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     poll_interval = args.poll_interval if args.poll_interval > 0 else 0.0
 
     async def _run() -> int:
-        timeout = aiohttp.ClientTimeout(total=10)
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=20)
         connector = aiohttp.TCPConnector(limit_per_host=args.max_concurrency)
 
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             try:
                 symbols = await fetch_trading_symbols(session)
-            except aiohttp.ClientError as error:
+            except (aiohttp.ClientError, asyncio.TimeoutError) as error:
                 print(f"Unable to load trading symbols: {error}", file=sys.stderr)
                 return 1
 
