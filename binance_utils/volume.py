@@ -12,11 +12,11 @@ def extract_volumes(klines: Sequence[Sequence[str]]) -> list[float]:
     ----------
     klines:
         Sequence of kline payloads returned by the Binance REST API.  Each
-        element is expected to be an iterable where the volume is stored at
-        index 5 and provided as a string.
+        element is expected to be an iterable where the quote asset volume is
+        stored at index 7 and provided as a string.
     """
 
-    return [float(kline[5]) for kline in klines]
+    return [float(kline[7]) for kline in klines]
 
 
 def calculate_average_volume(
@@ -28,8 +28,8 @@ def calculate_average_volume(
     Parameters
     ----------
     klines:
-        Sequence of kline payloads where element ``[5]`` contains the traded
-        volume as a string.
+        Sequence of kline payloads where element ``[7]`` contains the traded
+        quote asset volume as a string.
     window:
         Amount of klines to use when computing the average.
 
