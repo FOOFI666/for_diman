@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .volume import VolumeField
+
 
 @dataclass(slots=True)
 class CandleCharacteristics:
@@ -14,12 +16,16 @@ class CandleCharacteristics:
     body_ratio: float
 
 
-def _parse_candle(kline: list[str] | tuple[str, ...]) -> CandleCharacteristics:
+def _parse_candle(
+    kline: list[str] | tuple[str, ...],
+    *,
+    volume_field: VolumeField,
+) -> CandleCharacteristics:
     open_price = float(kline[1])
     high_price = float(kline[2])
     low_price = float(kline[3])
     close_price = float(kline[4])
-    volume = float(kline[7])
+    volume = float(kline[volume_field.index])
 
     price_reference = open_price if open_price != 0 else 1.0
     body_ratio = abs(close_price - open_price) / price_reference
@@ -36,6 +42,7 @@ def is_green_volume_spike(
     average_volume: float,
     volume_multiplier: float,
     *,
+    volume_field: VolumeField = VolumeField.QUOTE,
     max_body_ratio: float | None = None,
 ) -> bool:
     """Return ``True`` when the candle satisfies the configured filters.
@@ -53,7 +60,7 @@ def is_green_volume_spike(
         opening price.  When ``None`` the body size is not taken into account.
     """
 
-    candle = _parse_candle(kline)
+    candle = _parse_candle(kline, volume_field=volume_field)
 
     if not candle.is_green:
         return False
