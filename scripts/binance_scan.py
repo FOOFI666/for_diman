@@ -13,7 +13,7 @@ from typing import Iterable, Sequence
 
 import aiohttp
 
-from binance_utils import calculate_average_volume, is_green_volume_spike
+from binance_utils import VolumeField, calculate_average_volume, is_green_volume_spike
 
 
 BINANCE_FUTURES_API_URL = "https://fapi.binance.com"  # USDⓈ-M Futures endpoint.
@@ -28,6 +28,7 @@ class Detection:
     detected_at: dt.datetime
     last_candle_volume: float
     average_volume_60: float
+    volume_field: VolumeField
 
 
 async def fetch_trading_symbols(session: aiohttp.ClientSession) -> list[str]:
@@ -72,6 +73,7 @@ async def analyse_symbol(
     avg_window: int,
     volume_multiplier: float,
     max_body_ratio: float | None,
+    volume_field: VolumeField,
 ) -> Detection | None:
     """Analyse a trading pair and return a detection when it matches."""
 
@@ -82,18 +84,32 @@ async def analyse_symbol(
         print(f"Failed to fetch klines for {symbol}: {error}", file=sys.stderr)
         return None
 
-    if len(klines) < avg_window + 1:
+    closed_klines = klines[:-1]
+    required_history = max(avg_window, 60)
+    if len(closed_klines) < required_history:
+        print(
+            "Skipping {symbol}: only {available} closed candles available;"
+            " need at least {required}.".format(
+                symbol=symbol, available=len(closed_klines), required=required_history
+            ),
+            file=sys.stderr,
+        )
         return None
 
-    average_volume = calculate_average_volume(klines[:-1], avg_window)
+    average_volume = calculate_average_volume(
+        closed_klines, avg_window, volume_field=volume_field
+    )
     last_candle = klines[-1]
-    last_volume = float(last_candle[7])
-    average_volume_60 = calculate_average_volume(klines[:-1], 60)
+    last_volume = float(last_candle[volume_field.index])
+    average_volume_60 = calculate_average_volume(
+        closed_klines, 60, volume_field=volume_field
+    )
 
     if not is_green_volume_spike(
         last_candle,
         average_volume,
         volume_multiplier,
+        volume_field=volume_field,
         max_body_ratio=max_body_ratio,
     ):
         return None
@@ -113,6 +129,7 @@ async def analyse_symbol(
         detected_at=dt.datetime.now(dt.timezone.utc),
         last_candle_volume=last_volume,
         average_volume_60=average_volume_60,
+        volume_field=volume_field,
     )
 
 
@@ -125,6 +142,7 @@ async def detect_symbols(
     volume_multiplier: float,
     max_body_ratio: float | None,
     max_concurrency: int,
+    volume_field: VolumeField,
 ) -> list[Detection]:
     """Return the list of symbols that satisfy the configured filters."""
 
@@ -139,6 +157,7 @@ async def detect_symbols(
                 avg_window=avg_window,
                 volume_multiplier=volume_multiplier,
                 max_body_ratio=max_body_ratio,
+                volume_field=volume_field,
             )
 
     tasks = [asyncio.create_task(_bounded(symbol)) for symbol in symbols]
@@ -196,6 +215,15 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
         help="Minimal multiplier between the latest volume and the average volume",
     )
     parser.add_argument(
+        "--volume-field",
+        choices=("quote", "base"),
+        default="quote",
+        help=(
+            "Volume metric to compare: 'quote' uses the quote asset volume (index 7) "
+            "while 'base' uses the base asset volume (index 5)."
+        ),
+    )
+    parser.add_argument(
         "--max-body-ratio",
         type=float,
         default=0.001,
@@ -231,8 +259,13 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_arguments(argv or sys.argv[1:])
 
+    if args.avg_window <= 0:
+        print("Average window must be a positive integer.", file=sys.stderr)
+        return 1
+
     max_body_ratio = args.max_body_ratio if args.max_body_ratio > 0 else None
     poll_interval = args.poll_interval if args.poll_interval > 0 else 0.0
+    volume_field = VolumeField.from_label(args.volume_field)
 
     async def _run() -> int:
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=20)
@@ -256,6 +289,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     volume_multiplier=args.volume_multiplier,
                     max_body_ratio=max_body_ratio,
                     max_concurrency=args.max_concurrency,
+                    volume_field=volume_field,
                 )
 
                 new_detections: list[Detection] = []
@@ -272,10 +306,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
 
                 for detection in new_detections:
+                    volume_label = detection.volume_field.label
                     print(
                         f"{detection.symbol} - {detection.candle_open_time:%Y-%m-%d %H:%M:%S} UTC"
-                        f" | volume_usdt: {detection.last_candle_volume:.2f}"
-                        f" | avg60_usdt: {detection.average_volume_60:.2f}",
+                        f" | volume_{volume_label}: {detection.last_candle_volume:.2f}"
+                        f" | avg60_{volume_label}: {detection.average_volume_60:.2f}",
                         flush=True,
                     )
 
